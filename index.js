@@ -7,11 +7,15 @@ import { Strategy } from "passport-local";
 import GoogleStrategy from "passport-google-oauth2";
 import session from "express-session";
 import env from "dotenv";
+import anonRoutes from './routes/anon.js';
+import { generateName } from './routes/anon.js';
+
 
 const app = express();
 const port = 3000;
 const saltRounds = 10;
 env.config();
+app.use('/api', anonRoutes);
 
 app.use(
   session({
@@ -56,8 +60,12 @@ app.get("/logout", (req, res) => {
   });
 });
 
+function generateAvatar(name) {
+  return `https://api.dicebear.com/7.x/lorelei/svg?seed=${encodeURIComponent(name)}`;
+}
 
-app.get("/secrets", async (req, res) => {
+
+app.get("/my-secrets", async (req, res) => {
   if (req.isAuthenticated()) {
     try {
       const result = await db.query("SELECT secret FROM secrets WHERE email = $1", [
@@ -77,13 +85,37 @@ app.get("/secrets", async (req, res) => {
 
       res.render("secrets.ejs", {
         secrets,
-        displayName: req.user.email, // or replace with name if you store it
+        displayName: req.user.email,
         photo: picture,
         noSecret: "No secrets found!",
       });
     } catch (err) {
       console.error(err);
       res.send("Oops, something went wrong.");
+    }
+  } else {
+    res.redirect("/login");
+  }
+});
+
+app.get("/secrets", async (req, res) => {
+  if (req.isAuthenticated()) {
+    try {
+      const result = await db.query(`
+        SELECT s.secret, u.anon_name, u.avatar_url
+        FROM secrets s
+        JOIN users u ON s.email = u.email
+      `);
+
+      const secrets = result.rows;
+      console.log(secrets);
+      res.render("publicSecrets.ejs", {
+        secrets,
+        isAuthenticated: true
+      });
+    } catch (err) {
+      console.error("Error fetching secrets:", err);
+      res.status(500).send("Oops, something went wrong.");
     }
   } else {
     res.redirect("/login");
@@ -154,16 +186,20 @@ app.post("/register", async (req, res) => {
     ]);
 
     if (checkResult.rows.length > 0) {
-      req.redirect("/login");
+      res.redirect("/login");
     } else {
       bcrypt.hash(password, saltRounds, async (err, hash) => {
         if (err) {
           console.error("Error hashing password:", err);
         } else {
+          const anonName = generateName();
+          const avatarUrl = generateAvatar(anonName);
+
           const result = await db.query(
-            "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING *",
-            [email, hash]
+            "INSERT INTO users (email, password, anon_name, avatar_url) VALUES ($1, $2, $3, $4) RETURNING *",
+            [email, hash, anonName, avatarUrl]
           );
+
           const user = result.rows[0];
           req.login(user, (err) => {
             console.log("success");
@@ -231,10 +267,14 @@ passport.use(
           profile.email,
         ]);
         if (result.rows.length === 0) {
+          const anonName = generateName();
+          const avatarUrl = generateAvatar(anonName);
+
           const newUser = await db.query(
-            "INSERT INTO users (email, password) VALUES ($1, $2)",
-            [profile.email, "google"]
+            "INSERT INTO users (email, password, anon_name, avatar_url) VALUES ($1, $2, $3, $4)",
+            [profile.email, "google", anonName, avatarUrl]
           );
+
           return cb(null, newUser.rows[0]);
         } else {
           return cb(null, result.rows[0]);
